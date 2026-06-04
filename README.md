@@ -1,115 +1,94 @@
-# Aria — a self-hosted voice AI phone agent
+# Aria, a self-hosted voice AI phone agent
 
-Aria is a production-grade **voice AI agent that answers and makes real phone calls** over the
-PSTN. It was built as an after-hours sales agent (it qualifies leads, answers product questions,
-and books demos), but the core is a general, reusable voice-agent framework.
+Aria answers and makes real phone calls over the PSTN. It was built as an after-hours sales agent
+(it qualifies leads, answers product questions, and books demos), but the core is a general,
+reusable voice-agent framework.
 
-The design goal is **self-hosted-first**: the only mandatory paid services are **telephony**
-(Telnyx) and a **reasoning LLM**. Speech-to-text (faster-whisper), voice-activity detection
-(Silero), and text-to-speech (Kokoro) all run locally — no ElevenLabs, Deepgram, Vapi, or Retell
-required. An optional OpenAI Realtime backend is included for the lowest latency.
+The design goal is self-hosted first. The only mandatory paid services are telephony (Telnyx) and a
+reasoning LLM. Speech-to-text (faster-whisper), voice-activity detection (Silero), and text-to-speech
+(Kokoro) all run locally, with no ElevenLabs, Deepgram, Vapi, or Retell. An optional OpenAI Realtime
+backend is included for the lowest latency.
 
-What makes this repo unusual is the **observability**: it ships a ground-truth latency oracle and an
-honest, reproducible benchmark of two architectures (see [Latency & metrics](#latency--metrics)).
-The numbers are measured from the call audio itself, not self-reported by the app.
-
----
+What makes this repo unusual is the observability. It ships a ground-truth latency oracle and an
+honest, reproducible benchmark of two architectures, measured from the call audio itself rather than
+self-reported by the app.
 
 ## Two architectures, one flag
 
-Aria can run the same persona, tools, and telephony through either pipeline. Select with
-`REALTIME_BACKEND`:
+Aria runs the same persona, tools, and telephony through either pipeline. Select with
+`REALTIME_BACKEND`.
 
-### 1. Local cascade (`REALTIME_BACKEND=local`, default)
+**Local cascade** (`local`, the default):
 
 ```
-PSTN ─▶ Telnyx ─▶ POST /telnyx/webhook              (answer ▶ streaming_start)
-                       │
-            μ-law 8k ⇄ WS /ws/media
-                       │
-  inbound ▶ Silero VAD ▶ faster-whisper ▶ BRAIN (stream) ▶ sentence chunker
-                                                ▶ Kokoro TTS ▶ μ-law ▶ caller
-  barge-in: caller talks over Aria ▶ {"event":"clear"} flushes playback
+PSTN > Telnyx > POST /telnyx/webhook            (answer, then streaming_start)
+                   |
+        mu-law 8k <> WS /ws/media
+                   |
+  inbound > Silero VAD > faster-whisper > BRAIN (stream) > sentence chunker
+                                              > Kokoro TTS > mu-law > caller
+  barge-in: caller talks over Aria, {"event":"clear"} flushes playback
 ```
 
-The **brain** is itself selectable with `BRAIN_BACKEND`:
-- `claude` (default) — Anthropic Claude over the network (~600ms TTFT).
-- `slm` — a **local Qwen3-4B** running on the same GPU (transformers + CUDA). Includes
-  streaming STT→LLM overlap and KV-cache pre-warming. See
-  [`deploy/PHASE7-CASCADE-IMPLEMENTATION.md`](deploy/PHASE7-CASCADE-IMPLEMENTATION.md).
+The brain is itself selectable with `BRAIN_BACKEND`: `claude` (default, Anthropic over the network)
+or `slm` (a local Qwen3-4B on the same GPU, with streaming STT overlap and KV-cache pre-warming).
 
-### 2. OpenAI Realtime (`REALTIME_BACKEND=openai`)
+**OpenAI Realtime** (`openai`): a fused speech-to-speech bridge that streams mu-law straight to the
+OpenAI Realtime API and back. Same tools, same persona, lowest latency.
 
-A fused speech-to-speech bridge (`app/telephony/realtime_bridge.py`) that streams μ-law straight to
-the OpenAI Realtime API and back. Same tools, same persona, lowest latency. This is the production
-path for raw speed.
-
-Both backends emit the **same trace events**, so `/debug/turns` and the scorecard work identically.
-
----
+Both backends emit the same trace events, so `/debug/turns` and the scorecard work identically.
 
 ## Capabilities
 
-- **Real phone calls** in and out, over Telnyx (g711 μ-law 8 kHz, dual-channel recording).
-- **Tool use** — seven sales tools backed by Google Sheets (a lightweight lead CRM) and Google
-  Calendar (demo booking): `lookup_lead`, `find_open_slots`, `book_meeting`, `reschedule_meeting`,
-  `log_call`, `flag_for_human`, `mark_do_not_call`.
-- **Natural turn-taking** — content-aware barge-in, backchannel detection ("mm-hm" doesn't
-  interrupt), coalescing of rapid corrections, and a latency-triggered micro-ack that covers LLM
-  spikes without sounding robotic.
-- **Compliance** — recorded-call announcement (TCPA), do-not-call handling, $/day outbound cap.
-- **Self-configuring deploy** — a golden Docker image that boots on a RunPod GPU, opens a
-  cloudflared tunnel, and wires Telnyx to itself with no manual step.
+- Real phone calls in and out over Telnyx (g711 mu-law 8 kHz, dual-channel recording).
+- Seven sales tools backed by Google Sheets (lead CRM) and Google Calendar (booking): `lookup_lead`,
+  `find_open_slots`, `book_meeting`, `reschedule_meeting`, `log_call`, `flag_for_human`,
+  `mark_do_not_call`.
+- Natural turn-taking: content-aware barge-in, backchannel detection, coalescing of rapid
+  corrections, and a latency-triggered micro-ack that covers LLM spikes.
+- Compliance: recorded-call announcement (TCPA), do-not-call handling, daily outbound cap.
+- Self-configuring deploy: a golden Docker image boots on a RunPod GPU, opens a cloudflared tunnel,
+  and wires Telnyx to itself.
 
----
+## Latency and metrics
 
-## Latency & metrics
+Aria treats latency as a first-class, measured property, on two layers. The in-app trace
+(`app/trace.py`, exposed at `/debug/turns`) records per-stage timing for every turn. The ground-truth
+oracle (`scripts/call_timing.py`) pulls the Telnyx dual-channel recording, runs Silero VAD on each
+leg (the standard benchmark method), and measures the real caller-stop to agent-audio gap
+independently of the app, reporting both time-to-first-sound and time-to-content.
 
-Aria treats latency as a first-class, measured property. Two layers:
+![Voice agent latency explainer](docs/latency-explainer.png)
 
-1. **In-app trace** (`app/trace.py` → `/debug/turns`): per-stage timing (VAD tail, STT, LLM TTFT,
-   sentence chunk, TTS) for every turn.
-2. **Ground-truth oracle** (`scripts/call_timing.py`): pulls the Telnyx **dual-channel recording**,
-   runs **Silero VAD** on each leg (the standard benchmark method), and measures the real
-   **caller-stop → agent-audio** gap — independent of what the app claims about itself. It reports
-   two metrics: **time-to-first-sound** and **time-to-content**.
-
-The honest finding, measured apples-to-apples (full write-up in
-[`deploy/PHASE5-SCORECARD.md`](deploy/PHASE5-SCORECARD.md)):
+Measured apples-to-apples (full write-up in `deploy/PHASE5-SCORECARD.md`):
 
 | backend | perceived median (audio oracle) |
 |---|---|
-| OpenAI Realtime | **~1.25 s** |
-| Local cascade (Qwen SLM) | **~2.0 s** |
+| OpenAI Realtime | ~1.25 s |
+| Local cascade (Qwen SLM) | ~2.0 s |
 
-The fused realtime model wins on latency by ~750 ms; the self-hosted cascade's case is
-cost/control, not speed. The local SLM has a fast TTFT (~450 ms), but the cascade's extra stages
-(chunking, TTS, separate hops) erase that lead. The methodology — and where the app's own number
-*understates* perceived latency — is documented honestly, including a hypothesis the data later
-killed and a retraction.
+The fused realtime model wins on latency by about 750 ms. The self-hosted cascade's case is cost and
+control, not speed: the local SLM has a fast TTFT (~450 ms), but the cascade's extra stages
+(chunking, TTS, separate hops) erase that lead.
 
 ```bash
-# measure any call from its recording
 python scripts/call_timing.py list
-python scripts/call_timing.py time latest          # or a recording id / mp3 path
+python scripts/call_timing.py time latest      # or a recording id / mp3 path
 ```
-
----
 
 ## Quick start (local, no phone)
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # fill in ANTHROPIC_API_KEY (+ TELNYX_API for real calls)
-
-python -m scripts.offline_smoke   # exercises VAD ▶ STT ▶ brain ▶ TTS with no phone
+cp .env.example .env                # set ANTHROPIC_API_KEY (and TELNYX_API for real calls)
+python -m scripts.offline_smoke     # VAD > STT > brain > TTS, no phone needed
 ```
 
-To take live calls you need a Telnyx number and a public URL (a cloudflared tunnel works):
+For live calls you need a Telnyx number and a public URL. A cloudflared tunnel works:
 
 ```bash
-bash scripts/start.sh          # opens a tunnel, wires Telnyx, starts the server
+bash scripts/start.sh               # opens a tunnel, wires Telnyx, starts the server
 ```
 
 ## Deploy (RunPod GPU)
@@ -118,15 +97,12 @@ bash scripts/start.sh          # opens a tunnel, wires Telnyx, starts the server
 python deploy/runpod_up.py --image docker.io/<you>/voice-agent:latest --no-validate
 ```
 
-The image self-wires Telnyx from `deploy/.env`. See [`deploy/`](deploy/) for the full runbooks
-(`SPEC.md`, `bare-metal-runbook.md`, the phase notes).
-
----
+The image self-wires Telnyx from `deploy/.env`. See `deploy/` for the full runbooks.
 
 ## Configuration
 
-All knobs live in `config.py` with env overrides; secrets come only from the environment (loaded
-from `.env`, which is git-ignored). See `.env.example` for the full list. Highlights:
+All knobs live in `config.py` with env overrides. Secrets come only from the environment (loaded
+from `.env`, which is git-ignored). See `.env.example` for the full list.
 
 | var | default | meaning |
 |---|---|---|
@@ -137,46 +113,29 @@ from `.env`, which is git-ignored). See `.env.example` for the full list. Highli
 | `KOKORO_VOICE` | `af_heart` | local TTS voice |
 | `VAD_SILENCE_THRESHOLD_MS` | `300` | end-of-turn silence |
 
-The Google integration (Sheets CRM + Calendar) is optional — without credentials the agent runs
-text-only and still answers calls. See `deploy/google-service-account-setup.md`.
-
----
+The Google integration is optional. Without credentials the agent runs text-only and still answers
+calls.
 
 ## Layout
 
 ```
-main.py                 FastAPI app + lifespan (loads engines once) + /debug/* endpoints
-config.py               all tunable knobs + persona (single source of truth)
+main.py        FastAPI app, lifespan, /debug/* endpoints
+config.py      all tunable knobs and persona
 app/
-  runtime.py            VAD / STT / TTS / SLM singletons
-  trace.py              structured per-turn timing events
-  audio/                codec · vad (Silero) · stt (faster-whisper) · tts (Kokoro) · streaming_stt
-  agent/                brain (Claude) · slm_brain (Qwen) · slm_common · sentence_chunker · pipeline · tools · persona
-  telephony/            protocol · commands · webhook · media_ws · realtime_bridge
-  integrations/         google_client · crm (Sheets) · gcal (Calendar)
+  runtime.py   VAD / STT / TTS / SLM singletons
+  trace.py     structured per-turn timing
+  audio/       codec, vad, stt, tts, streaming_stt
+  agent/       brain, slm_brain, slm_common, sentence_chunker, pipeline, tools, persona
+  telephony/   protocol, commands, webhook, media_ws, realtime_bridge
+  integrations/ google_client, crm (Sheets), gcal (Calendar)
 scripts/
-  offline_smoke.py      full local pipeline check (no phone)
-  call_timing.py        ground-truth latency oracle (Silero, dual-channel)
-  realtime_probe.py     OpenAI Realtime latency probe
-  slm_probe.py          local SLM TTFT + tool-calling probe
-  setup_telnyx.py       wire a number to this agent (idempotent)
-deploy/                 Dockerfiles, RunPod bring-up, runbooks, phase notes + scorecard
+  offline_smoke.py   full local pipeline check
+  call_timing.py     ground-truth latency oracle
+  realtime_probe.py  OpenAI Realtime probe
+  slm_probe.py       local SLM probe
+deploy/        Dockerfiles, RunPod bring-up, runbooks, scorecard
 ```
-
----
-
-## Security
-
-- **No secrets are committed.** `.env`, `.keys/`, and service-account JSON are git-ignored; the
-  repository history has been verified clean. Only `.env.example` (placeholders) is tracked.
-- A **secret-blocking pre-commit hook** ships in `.githooks/` — enable it once after cloning:
-  ```bash
-  git config core.hooksPath .githooks
-  ```
-  It refuses any commit containing an API-key-shaped string.
-
----
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
