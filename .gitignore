@@ -1,0 +1,16 @@
+.venv/
+.env
+# Google service-account keys (and any secret keys) — never commit
+.keys/
+*-sa.json
+*.log
+__pycache__/
+*.pyc
+.cloudflared_url
+voices/kokoro-v1.0.onnx
+voices/kokoro-v1.0.int8.onnx
+voices/voices-v1.0.bin
+# scratch / WSL artifacts (never publish)
+=*.txt
+*Zone.Identifier
+deploy/.env

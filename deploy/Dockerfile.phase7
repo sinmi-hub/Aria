@@ -1,0 +1,28 @@
+# Phase 7 overlay image — adds the SLM-probe deps + current app code on top of the
+# already-working gpu-phase6d golden image, WITHOUT re-running the memory-heavy model
+# prefetch (medium.en + Kokoro weights are already baked into the base layer).
+#
+# Why an overlay and not a full rebuild: rebuilding Dockerfile.gpu from scratch SIGBUS-
+# crashed Docker Desktop's WSL2 backend at the prefetch step — the model download spiked
+# memory past what the ~9.7GB WSL2 VM could hold alongside the fresh pip layer. This
+# overlay is just a pip install + code copy on the baked base, so it's light and the push
+# only ships the new thin layers (not the ~8GB base).
+#
+# Build + push from the repo root:
+#   IMAGE=docker.io/settl/voice-agent:gpu-phase7 \
+#     docker build -f deploy/Dockerfile.phase7 -t "$IMAGE" . && docker push "$IMAGE"
+FROM docker.io/settl/voice-agent:gpu-phase6d
+
+WORKDIR /app
+
+# SLM-probe deps: transformers floor 4.51 for the Qwen3 chat template + tool-calling
+# (still <5, so the baked Kokoro/AlbertModel is unaffected), accelerate for device_map
+# load, bitsandbytes for the 4-bit path (--dtype 4bit).
+RUN pip3 install --no-cache-dir 'transformers>=4.51,<5' 'accelerate>=0.30' 'bitsandbytes>=0.43'
+
+# Current app code last (cheap layer) — brings in scripts/slm_probe.py and the
+# /debug/slm_probe endpoint in main.py.
+COPY . .
+
+EXPOSE 8000
+CMD ["bash", "scripts/entrypoint.sh"]

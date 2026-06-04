@@ -1,0 +1,71 @@
+# Self-contained "golden" GPU image for the voice agent (Phase 2).
+# Like a baked AMI: CUDA + torch + system libs + model weights are all frozen in,
+# so a rebuild is reproducible and a container has zero first-call downloads.
+# Secrets are NEVER baked — they are injected at runtime (RunPod pod env / --env-file).
+#
+# Build from the repo root:
+#   docker build -f deploy/Dockerfile.gpu -t <registry>/voice-agent:gpu .
+# Run locally (GPU + secrets + stable URL):
+#   docker run --gpus all --env-file deploy/.env \
+#     -e PUBLIC_URL=https://host -e MEDIA_WS_TOKEN=... -p 8000:8000 <registry>/voice-agent:gpu
+# On RunPod: create a pod from the pushed image; inject ANTHROPIC_API_KEY, TELNYX_API,
+# PUBLIC_URL, MEDIA_WS_TOKEN as pod env vars. Or use deploy/docker-compose.gpu.yml.
+
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    HF_HUB_DISABLE_TELEMETRY=1
+# Ubuntu 22.04 ships python3.10; that's the combo validated on the RunPod pod.
+# (Unchanged from the cached build — keep this line identical to reuse the torch/
+# prefetch layers below; cloudflared is installed later so it can't invalidate them.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-venv python3-pip espeak-ng curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 1) CUDA torch pinned to a real matched cu121 pair (reproducible; cuDNN 9 wheels for
+#    ctranslate2/faster-whisper). NOTE: do NOT install torchvision — it pins torch and
+#    breaks transformers->Kokoro (see deploy/PHASE2-HANDOFF.md §7).
+RUN pip3 install --no-cache-dir \
+        torch==2.5.1+cu121 torchaudio==2.5.1+cu121 \
+        --index-url https://download.pytorch.org/whl/cu121
+
+# 2) App deps (torch already satisfied; requirements pins transformers<5 + pynacl).
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# 3) Runtime profile set BEFORE prefetch so prefetch bakes the right STT model.
+ENV WHISPER_DEVICE=cuda \
+    WHISPER_COMPUTE=float16 \
+    WHISPER_MODEL=medium.en \
+    TTS_ENGINE=kokoro \
+    KOKORO_VOICE=af_heart \
+    PORT=8000
+
+# 4) Bake model weights (own cache layer). Runs CPU-only at build; reads
+#    WHISPER_MODEL/KOKORO_VOICE from the ENV above (no config import needed).
+COPY scripts/prefetch_models.py scripts/prefetch_models.py
+RUN python3 scripts/prefetch_models.py
+
+# 5) cloudflared (small binary, placed late so it doesn't invalidate the layers above).
+#    The container runs its own quick tunnel for a Telnyx-reliable wss endpoint —
+#    RunPod's HTTP proxy 422's Telnyx media streaming. See scripts/entrypoint.sh.
+RUN curl -fsSL -o /usr/local/bin/cloudflared \
+        https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+    && chmod +x /usr/local/bin/cloudflared
+
+# 5b) IANA timezone data. The slim CUDA base has no /usr/share/zoneinfo, so
+#     zoneinfo.ZoneInfo("America/Chicago") raises ZoneInfoNotFoundError, which used to
+#     kill ALL of Aria's Google tools at startup. The pip `tzdata` package gives
+#     zoneinfo a data source. Late layer = heavy layers above stay cached.
+RUN pip3 install --no-cache-dir tzdata
+
+# 6) App code last (cheap layer; doesn't invalidate the model layer above).
+COPY . .
+
+EXPOSE 8000
+# Entrypoint: cloudflared tunnel -> derive PUBLIC_URL -> wire Telnyx -> supervise
+# uvicorn. (run_server.sh remains for local/non-tunnel runs where PUBLIC_URL is set.)
+CMD ["bash", "scripts/entrypoint.sh"]

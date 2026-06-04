@@ -1,0 +1,19 @@
+# Keep the build context small and keep secrets/large local assets OUT of the image.
+.venv/
+.git/
+**/__pycache__/
+*.pyc
+*.log
+cloudflared.log
+start.log
+
+# Secrets never enter the image (injected at runtime via --env-file).
+.env
+deploy/.env
+# Service-account key — pushed to the pod at runtime, NEVER baked (public image!).
+.keys/
+*-sa.json
+
+# Local model assets are NOT needed for the default PyTorch-Kokoro image (baked via
+# prefetch_models.py). Re-include voices/ ONLY if you switch to kokoro-onnx (SPEC §4 Option B).
+voices/

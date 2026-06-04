@@ -1,0 +1,8 @@
+.env
+*.pem
+*.key
+secrets/
+
+# Google service account key (Aria runtime cred — never commit)
+google-sa.json
+*-sa.json

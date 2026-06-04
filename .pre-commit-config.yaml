@@ -1,0 +1,9 @@
+# Optional: industry-standard secret scanning via the pre-commit framework.
+#   pip install pre-commit && pre-commit install
+# The dependency-free .githooks/pre-commit hook is sufficient on its own;
+# this adds gitleaks for deeper detection if you already use pre-commit.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks

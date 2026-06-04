@@ -1,0 +1,1105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice Agent Latency Explainer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #14213d;
+      --muted: #5f6c7b;
+      --line: #d8dee8;
+      --bg: #f7f9fc;
+      --panel: #ffffff;
+      --vad: #5271ff;
+      --stt: #00a896;
+      --llm: #7b2cbf;
+      --tts: #f18701;
+      --send: #2d6a4f;
+      --risk: #c1121f;
+      --ok: #087f5b;
+      --shadow: 0 12px 34px rgba(20, 33, 61, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.45;
+    }
+
+    header {
+      padding: 32px clamp(18px, 4vw, 54px) 18px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1 {
+      margin-bottom: 8px;
+      font-size: clamp(30px, 4vw, 52px);
+      letter-spacing: 0;
+    }
+
+    header p {
+      max-width: 900px;
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    main {
+      max-width: 1220px;
+      margin: 0 auto;
+      padding: 28px clamp(16px, 3vw, 32px) 48px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 22px;
+      align-items: start;
+    }
+
+    section, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    section {
+      padding: 22px;
+      margin-bottom: 22px;
+    }
+
+    h2 {
+      margin-bottom: 14px;
+      font-size: 22px;
+    }
+
+    h3 {
+      margin-bottom: 8px;
+      font-size: 16px;
+    }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(96px, 1fr));
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .node {
+      min-height: 112px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+      position: relative;
+    }
+
+    .node::after {
+      content: "→";
+      position: absolute;
+      right: -14px;
+      top: 42%;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .node:last-child::after { content: ""; }
+
+    .node strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+
+    .node span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .meter {
+      margin: 18px 0 6px;
+      height: 72px;
+      display: flex;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #edf2f7;
+    }
+
+    .stage {
+      min-width: 7%;
+      padding: 9px 8px;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      font-size: 12px;
+      transition: width 180ms ease;
+    }
+
+    .stage b {
+      overflow-wrap: anywhere;
+      font-size: 13px;
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(100px, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    .readout {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 16px;
+      border-radius: 8px;
+      background: #f5f7fb;
+      border: 1px solid var(--line);
+      margin-top: 14px;
+    }
+
+    .readout strong {
+      font-size: 34px;
+      color: var(--risk);
+    }
+
+    .controls {
+      display: grid;
+      gap: 16px;
+    }
+
+    .presets {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    button {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.active {
+      background: var(--ink);
+      border-color: var(--ink);
+      color: #fff;
+    }
+
+    label {
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    label span {
+      display: flex;
+      justify-content: space-between;
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--ink);
+    }
+
+    input[type="text"], textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+    }
+
+    textarea {
+      min-height: 138px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+
+    .explain {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    .tile {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+    }
+
+    .tile p, li { color: var(--muted); }
+
+    ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    li + li { margin-top: 8px; }
+
+    .callout {
+      border-left: 5px solid var(--ok);
+      padding: 14px 16px;
+      background: #eefaf6;
+      border-radius: 6px;
+      color: #123b2c;
+    }
+
+    .evidence {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin: 14px 0;
+    }
+
+    .stat {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+    }
+
+    .stat b {
+      display: block;
+      font-size: 24px;
+      color: var(--ink);
+    }
+
+    .stat span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .metric-tools {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .metric-table-wrap {
+      overflow-x: auto;
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      min-width: 860px;
+      border-collapse: collapse;
+      background: #fff;
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }
+
+    th {
+      background: #f5f7fb;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .delta.good { color: var(--ok); font-weight: 700; }
+    .delta.bad { color: var(--risk); font-weight: 700; }
+    .muted { color: var(--muted); }
+
+    .mini-bars {
+      display: grid;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .mini-bar {
+      display: grid;
+      grid-template-columns: 160px 1fr 72px;
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .track {
+      height: 12px;
+      border-radius: 999px;
+      background: #edf2f7;
+      overflow: hidden;
+    }
+
+    .fill {
+      height: 100%;
+      border-radius: inherit;
+      background: var(--ok);
+      width: 0%;
+    }
+
+    .steps {
+      display: grid;
+      gap: 10px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcff;
+    }
+
+    .num {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--ink);
+      color: #fff;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    code {
+      background: #edf2f7;
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+
+    @media (max-width: 900px) {
+      .grid, .explain, .metric-tools { grid-template-columns: 1fr; }
+      .architecture { grid-template-columns: 1fr 1fr; }
+      .node::after { content: ""; }
+      .legend { grid-template-columns: 1fr 1fr; }
+      .evidence, .presets { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 560px) {
+      .architecture { grid-template-columns: 1fr; }
+      .evidence, .presets { grid-template-columns: 1fr; }
+      .meter { height: auto; min-height: 230px; flex-direction: column; }
+      .stage { width: 100% !important; min-height: 44px; }
+      .readout { display: block; }
+      .readout strong { display: block; margin-top: 6px; }
+      .mini-bar { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Why the phone agent feels slow</h1>
+    <p>
+      Your architecture is cost-efficient and controllable, but each turn waits for several gates before the caller hears the first response frame.
+      On RunPod, Kokoro appears to be running on GPU, so the main delay is the whole turn pipeline rather than TTS alone.
+    </p>
+  </header>
+
+  <main>
+    <section>
+      <h2>Current Design — three paths explored (2026-06-02)</h2>
+      <p>Two brains were tried behind the same Telnyx telephony. <b>OpenAI Realtime is the chosen
+      production path</b> (fastest); the self-hosted cascades are the alternatives if vendor lock /
+      per-minute cost / voice-control ever outweigh raw latency.</p>
+      <div class="explain">
+        <div class="tile">
+          <h3>OpenAI Realtime &nbsp;<span class="delta good">CHOSEN</span></h3>
+          <p>Fused STT+LLM+TTS in one hop, voice <code>marin</code>. first_audio <b>~333–365ms</b>,
+          full tool parity, clean barge-in, 0 errors on live calls. Tradeoff: vendor lock, OpenAI
+          voice only, per-minute cost. <i>Pod currently OFFLINE (killed at session end; one-command
+          bring-up).</i></p>
+        </div>
+        <div class="tile">
+          <h3>Local cascade — Claude brain</h3>
+          <p>The self-hosted pipeline modeled below: whisper → Claude → Kokoro. TTFA <b>~1.05–1.3s</b>
+          (Claude TTFT ~600ms is the gap; micro-ack masks spikes). Fully ours, any voice. This is the
+          Phase-5 baseline.</p>
+        </div>
+        <div class="tile">
+          <h3>SLM cascade — Qwen default + Claude fallback &nbsp;<span class="delta bad">PARKED</span></h3>
+          <p>Local <code>Qwen3-4B-Instruct-2507</code> (bf16): TTFT <b>~376ms</b>, tools 5/6. Chat-turn
+          TTFA <b>~790ms</b>, but tool turns ~1.3–1.6s+ and Claude-escalation turns are worse than
+          Claude-alone. Self-hosted, any voice — parked: edge is thin exactly on the tool-heavy turns
+          that matter.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Current Architecture — the self-hosted pipeline</h2>
+      <p>This is the local cascade path (also what the model below tunes). Realtime collapses these
+      gates into one hop. Inbound audio moves left to right; the outbound reply cannot begin until the
+      first sentence is generated and synthesized.</p>
+      <div class="architecture" aria-label="Architecture flow">
+        <div class="node"><strong>Telnyx call</strong><span>8 kHz μ-law media frames arrive over WebSocket.</span></div>
+        <div class="node"><strong>VAD</strong><span>Silero waits for speech, then a silence tail confirms the turn ended.</span></div>
+        <div class="node"><strong>Whisper STT</strong><span>The captured utterance is transcribed in a blocking worker thread.</span></div>
+        <div class="node"><strong>Claude stream</strong><span>Tokens arrive quickly, but the chunker waits for sentence punctuation.</span></div>
+        <div class="node"><strong>Kokoro TTS</strong><span>On GPU this can be fast; on CPU it can dominate the delay.</span></div>
+        <div class="node"><strong>Telnyx playback</strong><span>Audio is encoded to μ-law and sent back in paced 20 ms frames.</span></div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section>
+        <h2>Latency Stack</h2>
+        <p>Use presets or adjust the sliders. The red number is silence after you stop talking until the first agent audio is ready.</p>
+        <div class="meter" id="meter"></div>
+        <div class="legend">
+          <span><i class="dot" style="background: var(--vad)"></i>VAD tail</span>
+          <span><i class="dot" style="background: var(--stt)"></i>STT</span>
+          <span><i class="dot" style="background: var(--llm)"></i>LLM sentence</span>
+          <span><i class="dot" style="background: var(--tts)"></i>TTS</span>
+          <span><i class="dot" style="background: var(--send)"></i>Encode/send</span>
+        </div>
+        <div class="readout">
+          <span>Estimated TTFA, first audio</span>
+          <strong id="total">0.0s</strong>
+        </div>
+      </section>
+
+      <aside class="panel" style="padding: 22px; margin-bottom: 22px;">
+        <h2>Model the Turn</h2>
+        <div class="presets" aria-label="Latency presets">
+          <button class="active" data-preset="gpu">Baseline GPU</button>
+          <button data-preset="cpu">CPU Kokoro</button>
+          <button data-preset="target">Target Feel</button>
+        </div>
+        <div class="controls">
+          <label>
+            <span>VAD silence tail <output id="vadOut"></output></span>
+            <input id="vad" type="range" min="150" max="1200" step="10" value="300">
+          </label>
+          <label>
+            <span>Whisper STT <output id="sttOut"></output></span>
+            <input id="stt" type="range" min="100" max="2500" step="1" value="130">
+          </label>
+          <label>
+            <span>Claude first sentence <output id="llmOut"></output></span>
+            <input id="llm" type="range" min="200" max="4500" step="1" value="781">
+          </label>
+          <label>
+            <span>Kokoro sentence TTS <output id="ttsOut"></output></span>
+            <input id="tts" type="range" min="50" max="6000" step="1" value="124">
+          </label>
+          <label>
+            <span>Encode + first send <output id="sendOut"></output></span>
+            <input id="send" type="range" min="0" max="600" step="1" value="20">
+          </label>
+        </div>
+      </aside>
+    </div>
+
+    <section>
+      <h2>Target Budget — &lt; 1s Perceived</h2>
+      <div class="callout">
+        Operator targets (2026-06-02). The gap is almost entirely <b>LLM time-to-first-token</b>:
+        ~624ms typical (and 2–4s spikes) vs a 200–400ms goal. STT and TTS already sit in range.
+        The <b>latency-triggered micro-ack</b> doesn't lower the real number — it masks the spikes
+        so the <i>perceived</i> wait stays low when Claude stalls.
+      </div>
+      <table style="width:100%; border-collapse:collapse; font-size:14px; margin-top:8px;">
+        <thead>
+          <tr style="text-align:left; border-bottom:1px solid rgba(255,255,255,0.15);">
+            <th style="padding:8px 10px;">Stage</th>
+            <th style="padding:8px 10px;">Target</th>
+            <th style="padding:8px 10px;">Current (Call 5)</th>
+            <th style="padding:8px 10px;">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
+            <td style="padding:8px 10px;">Telnyx ingress/egress</td>
+            <td style="padding:8px 10px;">&lt; 50ms</td>
+            <td style="padding:8px 10px;">~unmeasured (encode ≈ 0)</td>
+            <td style="padding:8px 10px;"><span class="delta muted">n/a</span></td>
+          </tr>
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
+            <td style="padding:8px 10px;">VAD endpointing tail</td>
+            <td style="padding:8px 10px;">~200ms (adaptive)</td>
+            <td style="padding:8px 10px;">300ms (fixed)</td>
+            <td style="padding:8px 10px;"><span class="delta bad">close</span></td>
+          </tr>
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
+            <td style="padding:8px 10px;">STT (first result)</td>
+            <td style="padding:8px 10px;">100–200ms</td>
+            <td style="padding:8px 10px;">130ms</td>
+            <td style="padding:8px 10px;"><span class="delta good">met ✓</span></td>
+          </tr>
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
+            <td style="padding:8px 10px;">LLM time-to-first-token</td>
+            <td style="padding:8px 10px;">200–400ms</td>
+            <td style="padding:8px 10px;">624ms (spikes 2–4s)</td>
+            <td style="padding:8px 10px;"><span class="delta bad">the gap</span></td>
+          </tr>
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
+            <td style="padding:8px 10px;">TTS first audio</td>
+            <td style="padding:8px 10px;">100–300ms</td>
+            <td style="padding:8px 10px;">124ms</td>
+            <td style="padding:8px 10px;"><span class="delta good">met ✓</span></td>
+          </tr>
+          <tr style="border-top:1px solid rgba(255,255,255,0.15); font-weight:700;">
+            <td style="padding:10px;">Total (perceived)</td>
+            <td style="padding:10px;">&lt; 1000ms</td>
+            <td style="padding:10px;">~1335ms (good) · micro-ack masks spikes</td>
+            <td style="padding:10px;"><span class="delta bad">~335ms over</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout" style="margin-top:14px;">
+        Path to &lt; 1s: the only material lever left is the LLM TTFT (≈624 → 400 would save ~220ms)
+        plus adaptive VAD (300 → ~230, ~70ms). That lands ~1.05s — the floor of this architecture.
+        Sub-1s on <i>every</i> turn needs a speech-to-speech realtime model that collapses
+        STT→LLM→TTS into one hop. <b>Phase 6 — DONE &amp; LIVE:</b> OpenAI <code>gpt-realtime</code>
+        (voice <code>marin</code>) on real calls — first_audio <b>~333–450ms</b>, full tool parity,
+        clean barge-in. ~3× faster than local. Tradeoff: vendor lock + OpenAI voice + per-min cost.<br><br>
+        <b>Phase 7 (candidate) — SLM+Claude cascade — PROBED:</b> local
+        <code>Qwen3-4B-Instruct-2507</code> (bf16) measured on the A4500: TTFT <b>~376ms</b>
+        (vs Claude's ~600ms), tool-calling <b>5/6</b> on our real schemas after the SLM-path
+        prompt fixes (4/6 raw), VRAM 10/20GB alongside whisper+kokoro. Projected cascade TTFA
+        <b>~790ms — under 1s, self-hosted</b> (any voice incl. Kokoro, no vendor lock). bf16 beat
+        4-bit on both latency and tools (VRAM isn't the constraint), overturning the Q4 pick.
+        <b>~790ms is best-case (chat turn only)</b> — tool turns need 2 SLM passes + tool exec
+        (~1.3–1.6s+, micro-ack-masked), where the cascade loses ground. <b>Realtime (~333ms)
+        stays the raw-speed champ; cascade = SLM-default + Claude-fallback, self-hosted.
+        Phase 7 PARKED (realtime stays live).</b>
+        See <code>PHASE7-CASCADE-SLM-NOTES.md</code>; GPU watched via <code>/debug/gpu</code>.
+      </div>
+    </section>
+
+    <section>
+      <h2>What Your Logs Say</h2>
+      <div class="callout">
+        Phase 5 Call 5 (gpu-phase5i) <code>/debug/turns</code>: <code>claude_ttft=624ms</code>,
+        <code>tts_first=124ms</code> — GPU behavior. The remaining lag is the VAD tail and Claude's
+        time-to-first-token; STT and TTS are already cheap. Spikes (TTFT 2–4s) are Anthropic-side
+        variance, now masked by the latency-triggered micro-ack.
+      </div>
+      <div class="evidence">
+        <div class="stat"><b>300ms</b><span>VAD silence tail</span></div>
+        <div class="stat"><b>130ms</b><span>measured STT</span></div>
+        <div class="stat"><b>624ms</b><span>Claude TTFT (781ms to 1st sentence)</span></div>
+        <div class="stat"><b>124ms</b><span>measured Kokoro TTS</span></div>
+      </div>
+      <div class="explain" style="margin-top: 14px;">
+        <div class="tile">
+          <h3>GPU path</h3>
+          <p>RunPod uses CUDA Torch and <code>TTS_ENGINE=kokoro</code>. When CUDA is visible, the code prints and uses Kokoro on <code>cuda</code>.</p>
+        </div>
+        <div class="tile">
+          <h3>CPU path</h3>
+          <p>If you run this shell locally, no GPU is visible. CPU Kokoro can still make TTS the dominant delay.</p>
+        </div>
+        <div class="tile">
+          <h3>Serial pipeline</h3>
+          <p>VAD, STT, LLM sentence detection, and TTS happen in order. Even small waits stack into a large pause.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Progress & Metrics</h2>
+      <p>
+        This section tracks only real measurements. Add snapshots from <code>/debug/metrics</code>;
+        deltas are calculated against the previous saved snapshot.
+      </p>
+      <div class="evidence" id="currentMetricCards">
+        <div class="stat"><b>--</b><span>TTFA first audio</span></div>
+        <div class="stat"><b>--</b><span>TTFA first answer</span></div>
+        <div class="stat"><b>--</b><span>LLM first sentence</span></div>
+        <div class="stat"><b>--</b><span>TTS first answer</span></div>
+      </div>
+      <div class="mini-bars" id="metricBars"></div>
+      <div class="metric-tools">
+        <div class="tile">
+          <h3>Add a Real Snapshot</h3>
+          <label>
+            <span>Snapshot label</span>
+            <input id="metricLabel" type="text" value="Live call">
+          </label>
+          <label style="margin-top: 12px;">
+            <span>Metrics JSON</span>
+            <textarea id="metricJson"></textarea>
+          </label>
+          <div class="button-row">
+            <button id="addMetric" type="button">Add Snapshot</button>
+            <button id="fetchMetric" type="button">Fetch Live</button>
+            <button id="clearMetrics" type="button">Clear Local</button>
+          </div>
+          <p class="muted" id="metricStatus" style="margin: 10px 0 0;"></p>
+        </div>
+        <div class="tile">
+          <h3>Source</h3>
+          <p>
+            Live endpoint: <code>https://1pdjeyypwhoa1l-8000.proxy.runpod.net/debug/metrics</code>
+          </p>
+          <p>
+            If browser fetch is blocked, run:
+          </p>
+          <p><code>curl -s https://1pdjeyypwhoa1l-8000.proxy.runpod.net/debug/metrics | python3 -m json.tool</code></p>
+          <p class="muted">
+            The first row below is seeded from the latest live metrics fetched during this session.
+          </p>
+        </div>
+      </div>
+      <div class="metric-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Snapshot</th>
+              <th>TTFA First Audio</th>
+              <th>TTFA First Answer</th>
+              <th>LLM First Sentence</th>
+              <th>TTS First Answer</th>
+              <th>VAD Tail</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody id="metricRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Pros and Cons of This Architecture</h2>
+      <div class="explain">
+        <div class="tile">
+          <h3>Pros</h3>
+          <ul>
+            <li>Low vendor lock-in and lower marginal cost.</li>
+            <li>Local STT, VAD, and TTS keep audio control in your process.</li>
+            <li>Barge-in is already supported with Telnyx <code>clear</code>.</li>
+          </ul>
+        </div>
+        <div class="tile">
+          <h3>Cons</h3>
+          <ul>
+            <li>Turn-taking is half-duplex, so every gate is felt as silence.</li>
+            <li>Claude punctuation timing controls when the first TTS job starts.</li>
+            <li>Local CPU runs behave very differently from the RunPod GPU image.</li>
+          </ul>
+        </div>
+        <div class="tile">
+          <h3>Best Fit</h3>
+          <ul>
+            <li>Works well for short, practical calls.</li>
+            <li>Needs careful response shaping to feel natural.</li>
+            <li>Needs timing logs per stage before changing providers.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Make the Conversation Feel Natural</h2>
+      <div class="steps">
+        <div class="step"><span class="num">1</span><div><h3>Verify the runtime</h3><p>Confirm the live pod logs show Kokoro on <code>cuda</code> and timing lines near the measured <code>tts_first=69ms</code>.</p></div></div>
+        <div class="step"><span class="num">2</span><div><h3>Shorten the first chunk</h3><p>Prompt Claude to start with a short useful sentence and avoid repeating the cached acknowledgement.</p></div></div>
+        <div class="step"><span class="num">3</span><div><h3>Use audio fillers intentionally</h3><p>Play cached phrases like "Got it" or "Let me check" immediately after STT, then synthesize the real answer behind it.</p></div></div>
+        <div class="step"><span class="num">4</span><div><h3>Reduce silence detection</h3><p>The baseline was 600 ms. The code now defaults to 400 ms; confirm it does not clip slower speakers.</p></div></div>
+        <div class="step"><span class="num">5</span><div><h3>Move perceived audio earlier</h3><p>Cache short acknowledgements and send them while the real answer is being produced. This improves feel even when total pipeline time is unchanged.</p></div></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const stages = [
+      ["vad", "VAD tail", "--vad"],
+      ["stt", "STT", "--stt"],
+      ["llm", "LLM sentence", "--llm"],
+      ["tts", "TTS", "--tts"],
+      ["send", "Encode/send", "--send"]
+    ];
+
+    const presets = {
+      // Baseline GPU = current best-case live turn (Phase 5 Call 5, gpu-phase5i, vad 300).
+      // llm = first-SENTENCE (TTFT ~600 + chunk ~160). send/encode folds to ~0 in practice.
+      gpu: { vad: 300, stt: 130, llm: 781, tts: 124, send: 20 },
+      cpu: { vad: 600, stt: 900, llm: 816, tts: 3200, send: 150 },
+      // Target Feel = the <1s perceived budget (operator targets, 2026-06-02):
+      // telnyx/egress <50, STT 100-200 (streaming), LLM-TTFT 200-400, TTS 100-300.
+      target: { vad: 200, stt: 150, llm: 350, tts: 200, send: 50 }
+    };
+
+    const meter = document.getElementById("meter");
+    // Live pod URL (changes each deploy). NO live pod right now — realtime line OFFLINE
+    // (pod killed 2026-06-02 at session end; see deploy/RUNPOD-LIVE.md to bring it back).
+    const liveMetricUrl = "https://POD-ID-8000.proxy.runpod.net/debug/metrics";
+    const seededSnapshots = [
+      {
+        label: "Live after fast-ack deploy",
+        source: "/debug/metrics fetched in this session",
+        capturedAt: "2026-05-31",
+        metrics: {
+          ttfa_first_audio_ms: 526,
+          ttfa_first_audio_source: "fast_ack",
+          ttfa_first_audio_post_vad_ms: 126,
+          ttfa_first_answer_ms: 1804,
+          ttfa_first_answer_post_vad_ms: 1404,
+          llm_first_sentence_ms: 766,
+          tts_first_answer_ms: 43,
+          vad_silence_threshold_ms: 400
+        }
+      },
+      {
+        label: "Phase 5 Pass 1 baseline (3-turn avg)",
+        source: "live call console logs, vad 400, fast_ack removed",
+        capturedAt: "2026-05-31",
+        metrics: {
+          ttfa_first_audio_ms: 1670,
+          ttfa_first_audio_source: "answer",
+          ttfa_first_audio_post_vad_ms: 1270,
+          ttfa_first_answer_ms: 1670,
+          ttfa_first_answer_post_vad_ms: 1270,
+          llm_first_sentence_ms: 1058,
+          tts_first_answer_ms: 83,
+          vad_silence_threshold_ms: 400
+        }
+      },
+      {
+        label: "Phase 5 Pass 1.1 (5-turn avg)",
+        source: "live call console logs, vad 300, reaction fast-path did NOT fire (no !/? openers)",
+        capturedAt: "2026-05-31",
+        metrics: {
+          ttfa_first_audio_ms: 1880,
+          ttfa_first_audio_source: "answer",
+          ttfa_first_audio_post_vad_ms: 1580,
+          ttfa_first_answer_ms: 1880,
+          ttfa_first_answer_post_vad_ms: 1580,
+          llm_first_sentence_ms: 1375,
+          tts_first_answer_ms: 47,
+          vad_silence_threshold_ms: 300
+        }
+      },
+      {
+        label: "Phase 5 Call 5 — good turn (gpu-phase5i)",
+        source: "/debug/turns turn 1, vad 300, chunker 8→7, best-case",
+        capturedAt: "2026-06-01",
+        metrics: {
+          ttfa_first_audio_ms: 1335,
+          ttfa_first_audio_source: "answer",
+          ttfa_first_audio_post_vad_ms: 1035,
+          ttfa_first_answer_ms: 1335,
+          ttfa_first_answer_post_vad_ms: 1035,
+          claude_ttft_ms: 624,
+          llm_first_sentence_ms: 781,
+          tts_first_answer_ms: 124,
+          vad_silence_threshold_ms: 300
+        }
+      },
+      {
+        label: "Phase 5 — TTFT SPIKE turn (no mask)",
+        source: "/debug/turns, background-noise call: Claude TTFT spiked to 4.1s",
+        capturedAt: "2026-06-02",
+        metrics: {
+          ttfa_first_audio_ms: 4926,
+          ttfa_first_audio_source: "answer",
+          ttfa_first_audio_post_vad_ms: 4626,
+          ttfa_first_answer_ms: 4926,
+          ttfa_first_answer_post_vad_ms: 4626,
+          claude_ttft_ms: 4098,
+          llm_first_sentence_ms: 4388,
+          tts_first_answer_ms: 91,
+          vad_silence_threshold_ms: 300
+        }
+      },
+      {
+        label: "Phase 5 — same spike, micro-ack MASKED (gpu-phase5l)",
+        source: "latency-triggered micro-ack fires at ack_delay 1100ms; real answer streams behind it",
+        capturedAt: "2026-06-02",
+        metrics: {
+          ttfa_first_audio_ms: 1530,
+          ttfa_first_audio_source: "micro_ack",
+          ttfa_first_audio_post_vad_ms: 1230,
+          ttfa_first_answer_ms: 4926,
+          ttfa_first_answer_post_vad_ms: 4626,
+          claude_ttft_ms: 4098,
+          llm_first_sentence_ms: 4388,
+          tts_first_answer_ms: 91,
+          vad_silence_threshold_ms: 300
+        }
+      },
+      {
+        label: "Phase 6 — OpenAI Realtime (PROBE, not a call)",
+        source: "scripts/realtime_probe.py, gpt-realtime, text-in, manual VAD, 6 trials (308-321ms)",
+        capturedAt: "2026-06-02",
+        metrics: {
+          ttfa_first_audio_ms: 312,
+          ttfa_first_audio_source: "realtime_first_audio",
+          ttfa_first_audio_post_vad_ms: 312,
+          ttfa_first_answer_ms: 312,
+          ttfa_first_answer_post_vad_ms: 312,
+          llm_first_sentence_ms: 312,
+          tts_first_answer_ms: 0,
+          vad_silence_threshold_ms: 0
+        }
+      },
+      {
+        label: "Phase 6 — OpenAI Realtime LIVE CALL (marin, gpu-phase6d)",
+        source: "/debug/turns, real Telnyx call, tools (lookup/log_call), 0 errors",
+        capturedAt: "2026-06-02",
+        metrics: {
+          ttfa_first_audio_ms: 420,
+          ttfa_first_audio_source: "realtime_live",
+          ttfa_first_audio_post_vad_ms: 420,
+          ttfa_first_answer_ms: 420,
+          ttfa_first_answer_post_vad_ms: 420,
+          llm_first_sentence_ms: 420,
+          tts_first_answer_ms: 0,
+          vad_silence_threshold_ms: 0
+        }
+      },
+      {
+        label: "Phase 7 — SLM cascade (PROBE TTFT + projected TTFA, gpu-phase7b, tuned)",
+        source: "scripts/slm_probe.py, Qwen3-4B-Instruct-2507 bf16 tuned, TTFT median 376ms (373-380), tools 5/6; TTFA = STT130+TTFT376+chunk160+TTS124 projected — BEST CASE (chat turn). Tool turns ~1.3-1.6s+ (2 SLM passes + tool exec), masked by micro-ack. Phase 7 PARKED",
+        capturedAt: "2026-06-02",
+        metrics: {
+          ttfa_first_audio_ms: 790,
+          ttfa_first_audio_source: "slm_cascade_projected",
+          ttfa_first_audio_post_vad_ms: 790,
+          ttfa_first_answer_ms: 790,
+          ttfa_first_answer_post_vad_ms: 790,
+          stt_ms: 130,
+          claude_ttft_ms: 376,
+          llm_first_sentence_ms: 536,
+          tts_first_answer_ms: 124,
+          vad_silence_threshold_ms: 300
+        }
+      }
+    ];
+
+    function fmt(ms) {
+      return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+    }
+
+    function render() {
+      const values = Object.fromEntries(stages.map(([id]) => [id, Number(document.getElementById(id).value)]));
+      const total = Object.values(values).reduce((sum, value) => sum + value, 0);
+      meter.innerHTML = "";
+      stages.forEach(([id, label, colorVar]) => {
+        document.getElementById(`${id}Out`).textContent = fmt(values[id]);
+        const part = document.createElement("div");
+        part.className = "stage";
+        part.style.width = `${Math.max(7, values[id] / total * 100)}%`;
+        part.style.background = getComputedStyle(document.documentElement).getPropertyValue(colorVar);
+        part.innerHTML = `<b>${label}</b><span>${fmt(values[id])}</span>`;
+        meter.appendChild(part);
+      });
+      document.getElementById("total").textContent = `${(total / 1000).toFixed(1)}s`;
+    }
+
+    function storageKey() {
+      return "voice-agent-ttfa-snapshots-v1";
+    }
+
+    function loadSnapshots() {
+      const saved = localStorage.getItem(storageKey());
+      if (!saved) {
+        localStorage.setItem(storageKey(), JSON.stringify(seededSnapshots));
+        return [...seededSnapshots];
+      }
+      try {
+        const parsed = JSON.parse(saved);
+        return Array.isArray(parsed) ? parsed : [...seededSnapshots];
+      } catch {
+        return [...seededSnapshots];
+      }
+    }
+
+    function saveSnapshots(snapshots) {
+      localStorage.setItem(storageKey(), JSON.stringify(snapshots));
+    }
+
+    function metricValue(metrics, key) {
+      const value = Number(metrics?.[key]);
+      return Number.isFinite(value) ? value : null;
+    }
+
+    function metricText(value) {
+      return value === null ? "--" : fmt(Math.round(value));
+    }
+
+    function deltaText(value, previous) {
+      if (value === null || previous === null) return "";
+      const delta = Math.round(value - previous);
+      if (delta === 0) return `<span class="muted">0ms</span>`;
+      const cls = delta < 0 ? "good" : "bad";
+      const sign = delta > 0 ? "+" : "";
+      return ` <span class="delta ${cls}">(${sign}${delta}ms)</span>`;
+    }
+
+    function renderMetricCards(latest) {
+      const cards = document.getElementById("currentMetricCards");
+      const metrics = latest?.metrics || {};
+      const items = [
+        ["ttfa_first_audio_ms", "TTFA first audio"],
+        ["ttfa_first_answer_ms", "TTFA first answer"],
+        ["llm_first_sentence_ms", "LLM first sentence"],
+        ["tts_first_answer_ms", "TTS first answer"]
+      ];
+      cards.innerHTML = items.map(([key, label]) => {
+        const value = metricValue(metrics, key);
+        return `<div class="stat"><b>${metricText(value)}</b><span>${label}</span></div>`;
+      }).join("");
+    }
+
+    function renderMetricBars(latest) {
+      const bars = document.getElementById("metricBars");
+      const metrics = latest?.metrics || {};
+      const items = [
+        ["ttfa_first_audio_ms", "TTFA first audio"],
+        ["ttfa_first_answer_ms", "TTFA first answer"],
+        ["llm_first_sentence_ms", "LLM first sentence"],
+        ["tts_first_answer_ms", "TTS first answer"]
+      ];
+      const values = items.map(([key]) => metricValue(metrics, key)).filter((value) => value !== null);
+      const max = Math.max(1, ...values);
+      bars.innerHTML = items.map(([key, label]) => {
+        const value = metricValue(metrics, key);
+        const width = value === null ? 0 : Math.max(3, value / max * 100);
+        return `<div class="mini-bar">
+          <span>${label}</span>
+          <div class="track"><div class="fill" style="width:${width}%"></div></div>
+          <strong>${metricText(value)}</strong>
+        </div>`;
+      }).join("");
+    }
+
+    function renderSnapshots() {
+      const snapshots = loadSnapshots();
+      const rows = document.getElementById("metricRows");
+      rows.innerHTML = snapshots.map((snapshot, index) => {
+        const previous = snapshots[index - 1]?.metrics || {};
+        const metrics = snapshot.metrics || {};
+        const cell = (key) => {
+          const value = metricValue(metrics, key);
+          const prev = index > 0 ? metricValue(previous, key) : null;
+          return `${metricText(value)}${index > 0 ? deltaText(value, prev) : ""}`;
+        };
+        return `<tr>
+          <td><strong>${snapshot.label}</strong><br><span class="muted">${snapshot.capturedAt || ""}</span></td>
+          <td>${cell("ttfa_first_audio_ms")}<br><span class="muted">${metrics.ttfa_first_audio_source || ""}</span></td>
+          <td>${cell("ttfa_first_answer_ms")}</td>
+          <td>${cell("llm_first_sentence_ms")}</td>
+          <td>${cell("tts_first_answer_ms")}</td>
+          <td>${cell("vad_silence_threshold_ms")}</td>
+          <td><span class="muted">${snapshot.source || ""}</span></td>
+        </tr>`;
+      }).join("");
+      const latest = snapshots[snapshots.length - 1];
+      renderMetricCards(latest);
+      renderMetricBars(latest);
+    }
+
+    function addSnapshot(metrics, source) {
+      const label = document.getElementById("metricLabel").value.trim() || "Snapshot";
+      const snapshots = loadSnapshots();
+      snapshots.push({
+        label,
+        source,
+        capturedAt: new Date().toLocaleString(),
+        metrics
+      });
+      saveSnapshots(snapshots);
+      renderSnapshots();
+    }
+
+    document.getElementById("metricJson").value = JSON.stringify(seededSnapshots[0].metrics, null, 2);
+    document.getElementById("addMetric").addEventListener("click", () => {
+      const status = document.getElementById("metricStatus");
+      try {
+        const metrics = JSON.parse(document.getElementById("metricJson").value);
+        addSnapshot(metrics, "Pasted /debug/metrics JSON");
+        status.textContent = "Snapshot added.";
+      } catch (error) {
+        status.textContent = `Invalid JSON: ${error.message}`;
+      }
+    });
+    document.getElementById("fetchMetric").addEventListener("click", async () => {
+      const status = document.getElementById("metricStatus");
+      status.textContent = "Fetching live metrics...";
+      try {
+        const response = await fetch(liveMetricUrl, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const metrics = await response.json();
+        document.getElementById("metricJson").value = JSON.stringify(metrics, null, 2);
+        addSnapshot(metrics, "Fetched live /debug/metrics");
+        status.textContent = "Live snapshot added.";
+      } catch (error) {
+        status.textContent = `Fetch failed. Paste curl output instead. ${error.message}`;
+      }
+    });
+    document.getElementById("clearMetrics").addEventListener("click", () => {
+      localStorage.removeItem(storageKey());
+      renderSnapshots();
+      document.getElementById("metricStatus").textContent = "Local snapshots reset to the verified seed.";
+    });
+
+    stages.forEach(([id]) => document.getElementById(id).addEventListener("input", render));
+    document.querySelectorAll("[data-preset]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("[data-preset]").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        Object.entries(presets[button.dataset.preset]).forEach(([id, value]) => {
+          document.getElementById(id).value = value;
+        });
+        render();
+      });
+    });
+    render();
+    renderSnapshots();
+  </script>
+</body>
+</html>

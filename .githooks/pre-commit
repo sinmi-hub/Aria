@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Secret-blocking pre-commit hook (dependency-free).
+# Enable once after cloning:  git config core.hooksPath .githooks
+#
+# Refuses any commit whose staged additions contain an API-key-shaped string.
+# Placeholders in .env.example (e.g. "sk-ant-...") are short and do NOT match.
+set -euo pipefail
+
+patterns='sk-ant-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{40,}|hf_[A-Za-z0-9]{30,}|sk_live_[A-Za-z0-9]{20,}|rk_live_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|rpa_[A-Za-z0-9]{20,}|KEY[0-9A-Fa-f]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|"private_key"[[:space:]]*:'
+
+# Only scan added lines of staged text changes.
+added=$(git diff --cached --diff-filter=ACM -U0 | grep -E '^\+' | grep -vE '^\+\+\+' || true)
+hits=$(printf '%s\n' "$added" | grep -EnI "$patterns" || true)
+
+if [ -n "$hits" ]; then
+  echo "✖ pre-commit: a possible secret was detected — commit blocked."
+  printf '%s\n' "$hits" | sed -E 's/(.{0,14}).*/\1…[redacted]/' | head
+  echo
+  echo "Move the secret to .env (git-ignored). If this is a genuine false positive,"
+  echo "review it carefully and re-run with:  git commit --no-verify"
+  exit 1
+fi
+exit 0

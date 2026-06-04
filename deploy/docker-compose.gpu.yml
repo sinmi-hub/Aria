@@ -1,0 +1,22 @@
+# Run the golden GPU image. Requires the NVIDIA Container Toolkit on the host.
+#   cd deploy && PUBLIC_URL=https://voice.yourdomain.com docker compose -f docker-compose.gpu.yml up -d --build
+# Secrets come from deploy/.env (env_file); PUBLIC_URL is passed at run time.
+services:
+  voice-agent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gpu
+    image: voice-agent:gpu
+    env_file: .env
+    environment:
+      - PUBLIC_URL=${PUBLIC_URL}
+    ports:
+      - "8000:8000"
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
